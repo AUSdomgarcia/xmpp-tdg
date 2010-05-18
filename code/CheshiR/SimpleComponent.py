@@ -36,8 +36,7 @@ class SimpleComponent :
 
   ## BEGIN NEW
   def handleXMPPPresenceProbe(self, event) :
-    user = self.backend.getJIDForUser(event["from"].jid)
-    self.xmpp.sendPresence(pto = user)
+    self.xmpp.sendPresence(pto = event["from"])
   ## END NEW
 
   ## BEGIN NEW
