@@ -60,9 +60,13 @@ class RegistrableComponent :
         self.xmpp.sendPresence(pto = self.backend.getJIDForUser(user))
 
   def handleIncomingXMPPEvent(self, event) :
-    message = event["message"]
-    user = self.backend.getUserFromJID(event["jid"])
-    self.backend.addMessageFromUser(message, user)
+    msgLocations = {sleekxmpp.stanza.presence.Presence: "status",
+                    sleekxmpp.stanza.message.Message: "body"}
+ 
+    message = event[msgLocations[type(event)]]
+    user = self.backend.getUserFromJID(event["from"].jid)
+    if user is not None:
+      self.backend.addMessageFromUser(message, user)
 
   def handleXMPPPresenceProbe(self, event) :
     self.xmpp.sendPresence(pto = event["from"])
