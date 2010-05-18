@@ -36,13 +36,14 @@ class SimpleComponent :
 
   ## BEGIN NEW
   def handleXMPPPresenceProbe(self, event) :
-    self.xmpp.sendPresence(pto = self.backend.getJIDForUser(user))
+    user = self.backend.getJIDForUser(event["from"].jid)
+    self.xmpp.sendPresence(pto = user)
   ## END NEW
 
   ## BEGIN NEW
   def handleXMPPPresenceSubscription(self, subscription) :
     if subscription["type"] == "subscribe" :
-      userJID = subscription["from"]
+      userJID = subscription["from"].jid
       self.xmpp.sendPresenceSubscription(pto=userJID, ptype="subscribed")
       self.xmpp.sendPresence(pto = userJID)
       self.xmpp.sendPresenceSubscription(pto=userJID, ptype="subscribe")
@@ -51,7 +52,7 @@ class SimpleComponent :
   def handleMessageAddedToBackend(self, message) :
     body = message.user + ": " + message.text
     for subscriberJID in self.backend.getSubscriberJIDs(message.user) :
-      self.xmpp.sendMessage(subscriberJID, body)
+      self.xmpp.sendMessage(subscriberJID, body, mfrom=self.xmpp.jid)
 
   def start(self) :
     self.xmpp.connect()
