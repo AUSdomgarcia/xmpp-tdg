@@ -26,7 +26,7 @@ class EchoBot :
     self.xmpp.sendPresence(pstatus = "Send me a message")
 
   def handleIncomingMessage(self, message) : 
-    self.xmpp.sendMessage(message["jid"], message["message"]) 
+    self.xmpp.sendMessage(message["from"], message["body"]) 
 
 if __name__ == "__main__" :
   main()
