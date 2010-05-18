@@ -22,21 +22,21 @@ class Component :
       self.sendPresenceOfAllContactsForUser(user)
 
   def handleIncomingXMPPMessage(self, event) :
-    message = self.addRecipientToMessage(event["message"], event["to"])
-    user = self.backend.getUserFromJID(event["jid"])
+    message = self.addRecipientToMessage(event["body"], event["to"].jid)
+    user = self.backend.getUserFromJID(event["from"].jid)
     self.backend.addMessageFromUser(message, user)
 
   def handleIncomingXMPPPresence(self, event) :
-    if event["to"] == self.componentDomain :
-      user = self.backend.getUserFromJID(event["jid"])
-      self.backend.addMessageFromUser(event["message"], user)
+    if event["to"].jid == self.componentDomain :
+      user = self.backend.getUserFromJID(event["from"].jid)
+      self.backend.addMessageFromUser(event["status"], user)
 
   def handleXMPPPresenceProbe(self, event) :
     self.sendPresenceOfContactToUser(contactJID=event["to"], userJID=event["from"])
 
   def handleXMPPPresenceSubscription(self, subscription) :
     if subscription["type"] == "subscribe" :
-      userJID = subscription["from"]
+      userJID = subscription["from"].jid
       user = self.backend.getUserFromJID(userJID)
       contactJID = subscription["to"]
       self.xmpp.sendPresenceSubscription(
