@@ -15,14 +15,18 @@ class Bot :
   def handleXMPPConnected(self, event):
     self.xmpp.sendPresence()
 
-  def handleIncomingXMPPEvent(self, event) :
-    message = event["message"]
-    user = self.backend.getUserFromJID(event["jid"])
-    self.backend.addMessageFromUser(message, user)
+  def handleIncomingXMPPEvent(self, event):
+    msgLocations = {sleekxmpp.stanza.presence.Presence: "status",
+                    sleekxmpp.stanza.message.Message: "body"}
+
+    message = event[msgLocations[type(event)]]
+    user = self.backend.getUserFromJID(event["from"].jid)
+    if user is not None:
+      self.backend.addMessageFromUser(message, user)
   
   def handleMessageAddedToBackend(self, message) :
     body = message.user + ": " + message.text
-    htmlBody = "<a href=\"%(uri)s\">%(user)s</a>: %(message)s" % {
+    htmlBody = "<p><a href=\"%(uri)s\">%(user)s</a>: %(message)s</p>" % {
       "uri": self.url + "/" + message.user,
       "user" : message.user, "message" : message.text }
     for subscriberJID in self.backend.getSubscriberJIDs(message.user) :
