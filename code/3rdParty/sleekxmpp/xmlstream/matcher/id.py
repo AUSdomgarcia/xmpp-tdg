@@ -5,9 +5,9 @@
 
     See the file license.txt for copying permission.
 """
-from . waiter import Waiter
+from . import base
 
-class XMLWaiter(Waiter):
+class MatcherId(base.MatcherBase):
 	
-	def prerun(self, payload):
-		Waiter.prerun(self, payload.xml)
+	def match(self, xml):
+		return xml['id'] == self._criteria

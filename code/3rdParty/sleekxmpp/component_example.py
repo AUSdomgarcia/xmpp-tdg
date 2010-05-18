@@ -6,18 +6,17 @@ import time
 class Example(sleekxmpp.componentxmpp.ComponentXMPP):
 	
 	def __init__(self, jid, password):
-		sleekxmpp.componentxmpp.ComponentXMPP.__init__(self, jid, password, 'localhost', 5060)
+		sleekxmpp.componentxmpp.ComponentXMPP.__init__(self, jid, password, 'vm1', 5230)
 		self.add_event_handler("session_start", self.start)
 		self.add_event_handler("message", self.message)
 	
 	def start(self, event):
 		#self.getRoster()
 		#self.sendPresence(pto='admin@tigase.netflint.net/sarkozy')
-		self.sendPresence(pto='tigase.netflint.net')
+		#self.sendPresence(pto='tigase.netflint.net')
 		pass
 
 	def message(self, event):
-		print event
 		self.sendMessage("%s/%s" % (event['jid'], event['resource']), "Thanks for sending me, \"%s\"." % event['message'], mtype=event['type'])
 
 if __name__ == '__main__':
@@ -30,7 +29,7 @@ if __name__ == '__main__':
 	opts,args = optp.parse_args()
 	
 	logging.basicConfig(level=opts.loglevel, format='%(levelname)-8s %(message)s')
-	xmpp = Example('component.server.tld', 'asdfasdf')
+	xmpp = Example('component.vm1', 'secreteating')
 	xmpp.registerPlugin('xep_0004')
 	xmpp.registerPlugin('xep_0030')
 	xmpp.registerPlugin('xep_0060')

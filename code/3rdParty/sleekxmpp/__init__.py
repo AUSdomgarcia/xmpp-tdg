@@ -2,24 +2,12 @@
 
 """
     SleekXMPP: The Sleek XMPP Library
-    Copyright (C) 2007  Nathanael C. Fritz
+    Copyright (C) 2010  Nathanael C. Fritz
     This file is part of SleekXMPP.
 
-    SleekXMPP is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    SleekXMPP is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with SleekXMPP; if not, write to the Free Software
-    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+    See the file license.txt for copying permission.
 """
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals
 from . basexmpp import basexmpp
 from xml.etree import cElementTree as ET
 from . xmlstream.xmlstream import XMLStream
@@ -30,6 +18,8 @@ from . xmlstream.matcher.many import MatchMany
 from . xmlstream.handler.callback import Callback
 from . xmlstream.stanzabase import StanzaBase
 from . xmlstream import xmlstream as xmlstreammod
+from . stanza.message import Message
+from . stanza.iq import Iq
 import time
 import logging
 import base64
@@ -37,7 +27,7 @@ import sys
 import random
 import copy
 from . import plugins
-from . import stanza
+#from . import stanza
 srvsupport = True
 try:
 	import dns.resolver
@@ -73,11 +63,12 @@ class ClientXMPP(basexmpp, XMLStream):
 		#self.map_namespace('http://etherx.jabber.org/streams', 'stream')
 		#self.map_namespace('jabber:client', '')
 		self.features = []
+		#TODO: Use stream state here
 		self.authenticated = False
 		self.sessionstarted = False
 		self.registerHandler(Callback('Stream Features', MatchXPath('{http://etherx.jabber.org/streams}features'), self._handleStreamFeatures, thread=True))
 		self.registerHandler(Callback('Roster Update', MatchXPath('{%s}iq/{jabber:iq:roster}query' % self.default_ns), self._handleRoster, thread=True))
-		self.registerHandler(Callback('Roster Update', MatchXMLMask("<presence xmlns='%s' type='subscribe' />" % self.default_ns), self._handlePresenceSubscribe, thread=True))
+		#self.registerHandler(Callback('Roster Update', MatchXMLMask("<presence xmlns='%s' type='subscribe' />" % self.default_ns), self._handlePresenceSubscribe, thread=True))
 		self.registerFeature("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls' />", self.handler_starttls, True)
 		self.registerFeature("<mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl' />", self.handler_sasl_auth, True)
 		self.registerFeature("<bind xmlns='urn:ietf:params:xml:ns:xmpp-bind' />", self.handler_bind_resource)
@@ -86,14 +77,8 @@ class ClientXMPP(basexmpp, XMLStream):
 		#self.registerStanzaExtension('PresenceStanza', PresenceStanzaType)
 		#self.register_plugins()
 	
-	def importStanzas(self):
-		for modname in stanza.__all__:
-			__import__("%s.%s" % (globals()['stanza'].__name__, modname))
-			for register in getattr(stanza, modname).stanzas:
-				self.registerStanza(**register)
-
 	def __getitem__(self, key):
-		if self.plugin.has_key(key):
+		if key in self.plugin:
 			return self.plugin[key]
 		else:
 			logging.warning("""Plugin "%s" is not loaded.""" % key)
@@ -105,7 +90,6 @@ class ClientXMPP(basexmpp, XMLStream):
 	def connect(self, address=tuple()):
 		"""Connect to the Jabber Server.  Attempts SRV lookup, and if it fails, uses
 		the JID server."""
-		self.importStanzas()
 		if not address or len(address) < 2:
 			if not self.srvsupport:
 				logging.debug("Did not supply (address, port) to connect to and no SRV support is installed (http://www.dnspython.org).  Continuing to attempt connection, using server hostname from JID.")
@@ -138,14 +122,14 @@ class ClientXMPP(basexmpp, XMLStream):
 		if result:
 			self.event("connected")
 		else:
-			print "** Failed to connect -- disconnected"
+			logging.warning("Failed to connect")
 			self.event("disconnected")
 		return result
 	
 	# overriding reconnect and disconnect so that we can get some events
 	# should events be part of or required by xmlstream?  Maybe that would be cleaner
 	def reconnect(self):
-		print "** Reconnect -- disconnected"
+		logging.info("Reconnecting")
 		self.event("disconnected")
 		XMLStream.reconnect(self)
 	
@@ -159,28 +143,19 @@ class ClientXMPP(basexmpp, XMLStream):
 
 	def updateRoster(self, jid, name=None, subscription=None, groups=[]):
 		"""Add or change a roster item."""
-		iq = self.makeIqSet()
-		iq.attrib['from'] = self.fulljid
-		query = self.makeQueryRoster(iq)
-		item = ET.Element('item')
-		item.attrib['jid'] = jid
-		if name:
-			item.attrib['name'] = name
-		if subscription in ['to', 'from', 'both']:
-			item.attrib['subscription'] = subscription
-		else:
-			item.attrib['subscription'] = 'none'
-		for group in groups:
-			groupxml = ET.Element('group')
-			groupxml.text = group
-			item.append.groupxml
-		return self.send(iq, self.makeIq(self.getId()))
+		iq = self.Iq().setValues({'type': 'set'})
+		iq['roster'] = {jid: {'name': name, 'subscription': subscription, 'groups': groups}}
+		#self.send(iq, self.Iq().setValues({'id': iq['id']}))
+		r = iq.send()
+		return r['type'] == 'result'
 	
 	def getRoster(self):
 		"""Request the roster be sent."""
-		self.send(self.makeIqGet('jabber:iq:roster'))
+		iq = self.Iq().setValues({'type': 'get'}).enable('roster').send()
+		self._handleRoster(iq, request=True)
 	
 	def _handleStreamFeatures(self, features):
+		self.features = []
 		for sub in features.xml:
 			self.features.append(sub.tag)
 		for subelement in features.xml:
@@ -191,9 +166,9 @@ class ClientXMPP(basexmpp, XMLStream):
 						return True
 	
 	def handler_starttls(self, xml):
-		if self.ssl_support:
-			self.add_handler("<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls' />", self.handler_tls_start)
-			self.send(xml)
+		if not self.authenticated and self.ssl_support:
+			self.add_handler("<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls' />", self.handler_tls_start, instream=True)
+			self.sendXML(xml)
 			return True
 		else:
 			logging.warning("The module tlslite is required in to some servers, and has not been found.")
@@ -205,15 +180,20 @@ class ClientXMPP(basexmpp, XMLStream):
 			raise RestartStream()
 	
 	def handler_sasl_auth(self, xml):
+		if '{urn:ietf:params:xml:ns:xmpp-tls}starttls' in self.features:
+			return False
 		logging.debug("Starting SASL Auth")
-		self.add_handler("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl' />", self.handler_auth_success)
-		self.add_handler("<failure xmlns='urn:ietf:params:xml:ns:xmpp-sasl' />", self.handler_auth_fail)
+		self.add_handler("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl' />", self.handler_auth_success, instream=True)
+		self.add_handler("<failure xmlns='urn:ietf:params:xml:ns:xmpp-sasl' />", self.handler_auth_fail, instream=True)
 		sasl_mechs = xml.findall('{urn:ietf:params:xml:ns:xmpp-sasl}mechanism')
 		if len(sasl_mechs):
 			for sasl_mech in sasl_mechs:
 				self.features.append("sasl:%s" % sasl_mech.text)
 			if 'sasl:PLAIN' in self.features:
-				self.send("""<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>%s</auth>""" % str(base64.b64encode('\x00' + self.username + '\x00' + self.password)))
+				if sys.version_info < (3,0):
+					self.send("""<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>%s</auth>""" % base64.b64encode(b'\x00' + bytes(self.username) + b'\x00' + bytes(self.password)).decode('utf-8'))
+				else:
+					self.send("""<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>%s</auth>""" % base64.b64encode(b'\x00' + bytes(self.username, 'utf-8') + b'\x00' + bytes(self.password, 'utf-8')).decode('utf-8'))
 			else:
 				logging.error("No appropriate login method.")
 				self.disconnect()
@@ -233,14 +213,14 @@ class ClientXMPP(basexmpp, XMLStream):
 	
 	def handler_bind_resource(self, xml):
 		logging.debug("Requesting resource: %s" % self.resource)
-		out = self.makeIqSet()
+		iq = self.Iq(stype='set')
 		res = ET.Element('resource')
 		res.text = self.resource
 		xml.append(res)
-		out.append(xml)
-		id = out.get('id')
-		response = self.send(out, self.makeIqResult(id))
-		self.set_jid(response.find('{urn:ietf:params:xml:ns:xmpp-bind}bind/{urn:ietf:params:xml:ns:xmpp-bind}jid').text)
+		iq.append(xml)
+		response = iq.send()
+		#response = self.send(iq, self.Iq(sid=iq['id']))
+		self.set_jid(response.xml.find('{urn:ietf:params:xml:ns:xmpp-bind}bind/{urn:ietf:params:xml:ns:xmpp-bind}jid').text)
 		logging.info("Node set to: %s" % self.fulljid)
 		if "{urn:ietf:params:xml:ns:xmpp-session}session" not in self.features:
 			logging.debug("Established Session")
@@ -254,21 +234,12 @@ class ClientXMPP(basexmpp, XMLStream):
 			self.sessionstarted = True
 			self.event("session_start")
 	
-	def _handleRoster(self, roster):
-		xml = roster.xml
-		xml = roster.xml
-		roster_update = {}
-		for item in xml.findall('{jabber:iq:roster}query/{jabber:iq:roster}item'):
-			if not item.attrib['jid'] in self.roster:
-				self.roster[item.attrib['jid']] = {'groups': [], 'name': '', 'subscription': 'none', 'presence': {}, 'in_roster': False}
-			self.roster[item.attrib['jid']]['name'] = item.get('name', '')
-			self.roster[item.attrib['jid']]['subscription'] = item.get('subscription', 'none')
-			self.roster[item.attrib['jid']]['in_roster'] = 'True'
-			for group in item.findall('{jabber:iq:roster}group'):
-				self.roster[item.attrib['jid']]['groups'].append(group.text)
-			if self.roster[item.attrib['jid']]['groups'] == []:
-				self.roster[item.attrib['jid']]['groups'].append('Default')
-			roster_update[item.attrib['jid']] = self.roster[item.attrib['jid']]
-		if xml.get('type', 'result') == 'set':
-			self.send(self.makeIqResult(xml.get('id', '0')))
-		self.event("roster_update", roster_update)
+	def _handleRoster(self, iq, request=False):
+		if iq['type'] == 'set' or (iq['type'] == 'result' and request):
+			for jid in iq['roster']['items']:
+				if not jid in self.roster:
+					self.roster[jid] = {'groups': [], 'name': '', 'subscription': 'none', 'presence': {}, 'in_roster': True}
+				self.roster[jid].update(iq['roster']['items'][jid])
+			if iq['type'] == 'set':
+				self.send(self.Iq().setValues({'type': 'result', 'id': iq['id']}).enable('roster'))
+		self.event("roster_update", iq)

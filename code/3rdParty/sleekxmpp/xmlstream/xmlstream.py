@@ -1,22 +1,40 @@
-from __future__ import with_statement
-import Queue
+"""
+    SleekXMPP: The Sleek XMPP Library
+    Copyright (C) 2010  Nathanael C. Fritz
+    This file is part of SleekXMPP.
+
+    See the file license.txt for copying permission.
+"""
+
+from __future__ import with_statement, unicode_literals
+try:
+	import queue
+except ImportError:
+	import Queue as queue
 from . import statemachine
 from . stanzabase import StanzaBase
 from xml.etree import cElementTree
 from xml.parsers import expat
 import logging
 import socket
-import thread
+import threading
 import time
 import traceback
 import types
 import xml.sax.saxutils
 
+HANDLER_THREADS = 1
+
 ssl_support = True
-try:
-	from tlslite.api import *
-except ImportError:
-	ssl_support = False
+#try:
+import ssl
+#except ImportError:
+#	ssl_support = False
+import sys
+if sys.version_info < (3, 0):
+	#monkey patch broken filesocket object
+	from . import filesocket
+	#socket._fileobject = filesocket.filesocket
 	
 
 class RestartStream(Exception):
@@ -26,66 +44,6 @@ class CloseStream(Exception):
 	pass
 
 stanza_extensions = {}
-
-class _fileobject(object): # we still need this because Socket.makefile is broken in python2.5 (but it works fine in 3.0)
-
-	def __init__(self, sock, mode='rb', bufsize=-1):
-		self._sock = sock
-		if bufsize <= 0:
-			bufsize =  1024
-		self.bufsize = bufsize
-		self.softspace = False
-
-	def read(self, size=-1):
-		if size <= 0:
-			size = sys.maxint
-		blocks = []
-		#while size > 0:
-		#	b = self._sock.recv(min(size, self.bufsize))
-		#	size -= len(b)
-		#	if not b:
-		#		break
-		#	blocks.append(b)
-		#	print size
-		#return "".join(blocks)
-		buff = self._sock.recv(self.bufsize)
-		logging.debug("RECV: %s" % buff)
-		return buff
-
-	def readline(self, size=-1):
-		return self.read(size)
-		if size < 0:
-			size = sys.maxint
-		blocks = []
-		read_size = min(20, size)
-		found = 0
-		while size and not found:
-			b = self._sock.recv(read_size, MSG_PEEK)
-			if not b:
-				break
-			found = b.find('\n') + 1
-			length = found or len(b)
-			size -= length
-			blocks.append(self._sock.recv(length))
-			read_size = min(read_size * 2, size, self.bufsize)
-		return "".join(blocks)
-
-	def write(self, data):
-		self._sock.sendall(str(data))
-
-	def writelines(self, lines):
-		#  This version mimics the current writelines, which calls
-		#  str() on each line, but comments that we should reject
-		#  non-string non-buffers.  Let's omit the next line.
-		lines = [str(s) for s in lines]
-		self._sock.sendall(''.join(lines))
-
-	def flush(self):
-		 pass
-
-	def close(self):
-		self._sock.close()
-
 
 class XMLStream(object):
 	"A connection manager with XML events."
@@ -102,19 +60,25 @@ class XMLStream(object):
 
 		self.__thread = {}
 
-		self.__root_stanza = {}
+		self.__root_stanza = []
 		self.__stanza = {}
 		self.__stanza_extension = {}
 		self.__handlers = []
 
 		self.__tls_socket = None
+		self.filesocket = None
 		self.use_ssl = False
 		self.use_tls = False
 
 		self.stream_header = "<stream>"
 		self.stream_footer = "</stream>"
 
+		self.eventqueue = queue.Queue()
+		self.sendqueue = queue.Queue()
+
 		self.namespace_map = {}
+
+		self.run = True
 	
 	def setSocket(self, socket):
 		"Set the socket"
@@ -141,16 +105,22 @@ class XMLStream(object):
 			if use_tls is not None:
 				self.use_tls = use_tls
 			self.state.set('is client', True)
-			self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			if sys.version_info < (3, 0):
+				self.socket = filesocket.Socket26(socket.AF_INET, socket.SOCK_STREAM)
+			else:
+				self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			self.socket.settimeout(None)
 			if self.use_ssl and self.ssl_support:
 				logging.debug("Socket Wrapped for SSL")
 				self.socket = ssl.wrap_socket(self.socket)
 			try:
 				self.socket.connect(self.address)
+				#self.filesocket = self.socket.makefile('rb', 0)
+				self.filesocket = self.socket.makefile('rb', 0)
 				self.state.set('connected', True)
 				return True
-			except socket.error,(errno, strerror):
-				logging.error("Could not connect. Socket Error #%s: %s" % (errno, strerror))
+			except socket.error as serr:
+				logging.error("Could not connect. Socket Error #%s: %s" % (serr.errno, serr.strerror))
 				time.sleep(1)
 	
 	def connectUnix(self, filepath):
@@ -158,31 +128,41 @@ class XMLStream(object):
 
 	def startTLS(self):
 		"Handshakes for TLS"
-		#self.socket = ssl.wrap_socket(self.socket, ssl_version=ssl.PROTOCOL_TLSv1, do_handshake_on_connect=False)
-		#self.socket.do_handshake()
 		if self.ssl_support:
+			logging.info("Negotiating TLS")
 			self.realsocket = self.socket
-			self.socket = TLSConnection(self.socket)
-			self.socket.handshakeClientCert()
-			self.file = _fileobject(self.socket)
+			self.socket = ssl.wrap_socket(self.socket, ssl_version=ssl.PROTOCOL_TLSv1, do_handshake_on_connect=False)
+			self.socket.do_handshake()
+			if sys.version_info < (3,0):
+				from . filesocket import filesocket
+				self.filesocket = filesocket(self.socket)
+			else:
+				self.filesocket = self.socket.makefile('rb', 0)
 			return True
 		else:
-			logging.warning("Tried to enable TLS, but tlslite module not found.")
+			logging.warning("Tried to enable TLS, but ssl module not found.")
 			return False
 		raise RestartStream()
 	
 	def process(self, threaded=True):
-		#self.__thread['process'] = threading.Thread(name='process', target=self._process)
-		#self.__thread['process'].start()
+		for t in range(0, HANDLER_THREADS):
+			self.__thread['eventhandle%s' % t] = threading.Thread(name='eventhandle%s' % t, target=self._eventRunner)
+			self.__thread['eventhandle%s' % t].start()
+		self.__thread['sendthread'] = threading.Thread(name='sendthread', target=self._sendThread)
+		self.__thread['sendthread'].start()
 		if threaded:
-			thread.start_new(self._process, tuple())
+			self.__thread['process'] = threading.Thread(name='process', target=self._process)
+			self.__thread['process'].start()
 		else:
 			self._process()
+	
+	def schedule(self, seconds, handler, args=None):
+		threading.Timer(seconds, handler, args).start()
 	
 	def _process(self):
 		"Start processing the socket."
 		firstrun = True
-		while firstrun or self.state['reconnect']:
+		while self.run and (firstrun or self.state['reconnect']):
 			self.state.set('processing', True)
 			firstrun = False
 			try:
@@ -196,12 +176,15 @@ class XMLStream(object):
 				self.state.set('processing', False)
 				self.state.set('reconnect', False)
 				self.disconnect()
+				self.run = False
+				self.eventqueue.put(('quit', None, None))
 				return
 			except CloseStream:
 				return
 			except SystemExit:
+				self.eventqueue.put(('quit', None, None))
 				return
-			except socket.EBADF:
+			except socket.error:
 				if not self.state.reconnect:
 					return
 				else:
@@ -218,6 +201,7 @@ class XMLStream(object):
 			if self.state['reconnect']:
 				self.reconnect()
 			self.state.set('processing', False)
+			self.eventqueue.put(('quit', None, None))
 		#self.__thread['readXML'] = threading.Thread(name='readXML', target=self.__readXML)
 		#self.__thread['readXML'].start()
 		#self.__thread['spawnEvents'] = threading.Thread(name='spawnEvents', target=self.__spawnEvents)
@@ -226,18 +210,18 @@ class XMLStream(object):
 	def __readXML(self):
 		"Parses the incoming stream, adding to xmlin queue as it goes"
 		#build cElementTree object from expat was we go
-		#self.filesocket = self.socket.makefile('rb',0) #this is broken in python2.5, but works in python3.0
-		self.filesocket = _fileobject(self.socket)
+		#self.filesocket = self.socket.makefile('rb', 0)
+		#print self.filesocket.read(1024) #self.filesocket._sock.recv(1024)
 		edepth = 0
 		root = None
-		for (event, xmlobj) in cElementTree.iterparse(self.filesocket, ('end', 'start')):
+		for (event, xmlobj) in cElementTree.iterparse(self.filesocket, (b'end', b'start')):
 			if edepth == 0: # and xmlobj.tag.split('}', 1)[-1] == self.basetag:
-				if event == 'start':
+				if event == b'start':
 					root = xmlobj
 					self.start_stream_handler(root)
-			if event == 'end':
+			if event == b'end':
 				edepth += -1
-				if edepth == 0 and event == 'end':
+				if edepth == 0 and event == b'end':
 					return False
 				elif edepth == 1:
 					#self.xmlin.put(xmlobj)
@@ -249,21 +233,26 @@ class XMLStream(object):
 						return False
 					if root:
 						root.clear()
-			if event == 'start':
+			if event == b'start':
 				edepth += 1
 	
+	def _sendThread(self):
+		while self.run:
+			data = self.sendqueue.get(True)
+			logging.debug("SEND: %s" % data)
+			try:
+				self.socket.send(data.encode('utf-8'))
+				#self.socket.send(bytes(data, "utf-8"))
+				#except socket.error,(errno, strerror):
+			except:
+				self.state.set('connected', False)
+				if self.state.reconnect:
+					logging.error("Disconnected. Socket Error.")
+					traceback.print_exc()
+					self.disconnect(reconnect=True)
+	
 	def sendRaw(self, data):
-		logging.debug("SEND: %s" % data)
-		if type(data) == type(u''):
-			data = data.encode('utf-8')
-		try:
-			self.socket.send(data)
-		except socket.error,(errno, strerror):
-			self.state.set('connected', False)
-			if self.state.reconnect:
-				logging.error("Disconnected. Socket Error #%s: %s" % (errno,strerror))
-				self.disconnect(reconnect=True)
-			return False
+		self.sendqueue.put(data)
 		return True
 	
 	def disconnect(self, reconnect=False):
@@ -276,7 +265,7 @@ class XMLStream(object):
 			self.socket.close()
 			self.filesocket.close()
 			self.socket.shutdown(socket.SHUT_RDWR)
-		except socket.error,(errno,strerror):
+		except socket.error as serr:
 			#logging.warning("Error while disconnecting. Socket Error #%s: %s" % (errno, strerror))
 			#thread.exit_thread()
 			pass
@@ -296,22 +285,54 @@ class XMLStream(object):
 	def __spawnEvent(self, xmlobj):
 		"watching xmlOut and processes handlers"
 		#convert XML into Stanza
+		logging.debug("RECV: %s" % cElementTree.tostring(xmlobj))
 		xmlobj = self.incoming_filter(xmlobj)
-		logging.debug("PROCESSING: %s" % xmlobj.tag)
 		stanza = None
 		for stanza_class in self.__root_stanza:
-			if self.__root_stanza[stanza_class].match(xmlobj):
+			if xmlobj.tag == "{%s}%s" % (self.default_ns, stanza_class.name):
+			#if self.__root_stanza[stanza_class].match(xmlobj):
 				stanza = stanza_class(self, xmlobj)
 				break
 		if stanza is None:
 			stanza = StanzaBase(self, xmlobj)
+		unhandled = True
 		for handler in self.__handlers:
-			if handler.match(xmlobj):
-				handler.run(stanza)
+			if handler.match(stanza):
+				handler.prerun(stanza)
+				self.eventqueue.put(('stanza', handler, stanza))
 				if handler.checkDelete(): self.__handlers.pop(self.__handlers.index(handler))
-
+				unhandled = False
+		if unhandled:
+			stanza.unhandled()
 			#loop through handlers and test match
 			#spawn threads as necessary, call handlers, sending Stanza
+	
+	def _eventRunner(self):
+		logging.debug("Loading event runner")
+		while self.run:
+			try:
+				event = self.eventqueue.get(True, timeout=5)
+			except queue.Empty:
+				event = None
+			if event is not None:
+				etype = event[0]
+				handler = event[1]
+				args = event[2:]
+				#etype, handler, *args = event  #python 3.x way
+				if etype == 'stanza':
+					try:
+						handler.run(args[0])
+					except Exception as e:
+						traceback.print_exc()
+						args[0].exception(e)
+				elif etype == 'sched':
+					try:
+						handler.run(*args)
+					except:
+						logging.error(traceback.format_exc())
+				elif etype == 'quit':
+					logging.debug("Quitting eventRunner thread")
+					return False
 	
 	def registerHandler(self, handler, before=None, after=None):
 		"Add handler with matcher class and parameters."
@@ -326,12 +347,9 @@ class XMLStream(object):
 				return
 			idx += 1
 	
-	def registerStanza(self, matcher, stanza_class, root=True):
+	def registerStanza(self, stanza_class):
 		"Adds stanza.  If root stanzas build stanzas sent in events while non-root stanzas build substanza objects."
-		if root:
-			self.__root_stanza[stanza_class] = matcher
-		else:
-			self.__stanza[stanza_class] = matcher
+		self.__root_stanza.append(stanza_class)
 	
 	def registerStanzaExtension(self, stanza_class, stanza_extension):
 		if stanza_class not in stanza_extensions:
@@ -385,24 +403,21 @@ class XMLStream(object):
 		return ''.join(newoutput)
 
 	def xmlesc(self, text):
-		if type(text) != types.UnicodeType:
-			text = list(unicode(text, 'utf-8', 'ignore'))
-		else:
-			text = list(text)
+		text = list(text)
 		cc = 0
 		matches = ('&', '<', '"', '>', "'")
 		for c in text:
 			if c in matches:
 				if c == '&':
-					text[cc] = u'&amp;'
+					text[cc] = '&amp;'
 				elif c == '<':
-					text[cc] = u'&lt;'
+					text[cc] = '&lt;'
 				elif c == '>':
-					text[cc] = u'&gt;'
+					text[cc] = '&gt;'
 				elif c == "'":
-					text[cc] = u'&apos;'
+					text[cc] = '&apos;'
 				elif self.escape_quotes:
-					text[cc] = u'&quot;'
+					text[cc] = '&quot;'
 			cc += 1
 		return ''.join(text)
 	

@@ -18,12 +18,11 @@
 	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 """
 from __future__ import with_statement
-import base
+from . import base
 import logging
 from xml.etree import cElementTree as ET
 import traceback
 import time
-import thread
 
 class xep_0050(base.base_plugin):
 	"""
@@ -40,15 +39,16 @@ class xep_0050(base.base_plugin):
 		self.xmpp.add_handler("<iq type='set' xmlns='%s'><command xmlns='http://jabber.org/protocol/commands' action='complete'/></iq>" % self.xmpp.default_ns, self.handler_command_complete)
 		self.commands = {}
 		self.sessions = {}
+		self.sd = self.xmpp.plugin['xep_0030']
 	
 	def post_init(self):
-		self.xmpp['xep_0030'].add_feature('http://jabber.org/protocol/commands')
+		self.sd.add_feature('http://jabber.org/protocol/commands')
 
 	def addCommand(self, node, name, form, pointer=None, multi=False):
-		self.xmpp['xep_0030'].add_item(None, name, 'http://jabber.org/protocol/commands', node)
-		self.xmpp['xep_0030'].add_identity('automation', 'command-node', name, node)
-		self.xmpp['xep_0030'].add_feature('http://jabber.org/protocol/commands', node)
-		self.xmpp['xep_0030'].add_feature('jabber:x:data', node)
+		self.sd.add_item(None, name, 'http://jabber.org/protocol/commands', node)
+		self.sd.add_identity('automation', 'command-node', name, node)
+		self.sd.add_feature('http://jabber.org/protocol/commands', node)
+		self.sd.add_feature('jabber:x:data', node)
 		self.commands[node] = (name, form, pointer, multi)
 	
 	def getNewSession(self):
@@ -62,6 +62,7 @@ class xep_0050(base.base_plugin):
 		name, form, pointer, multi = self.commands[node]
 		self.sessions[sessionid] = {}
 		self.sessions[sessionid]['jid'] = xml.get('from')
+		self.sessions[sessionid]['to'] = xml.get('to')
 		self.sessions[sessionid]['past'] = [(form, None)]
 		self.sessions[sessionid]['next'] = pointer
 		npointer = pointer
@@ -81,9 +82,9 @@ class xep_0050(base.base_plugin):
 		in_command = xml.find('{http://jabber.org/protocol/commands}command')
 		sessionid = in_command.get('sessionid', None)
 		pointer = self.sessions[sessionid]['next']
-		results = self.xmpp['xep_0004'].makeForm('result')
+		results = self.xmpp.plugin['xep_0004'].makeForm('result')
 		results.fromXML(in_command.find('{jabber:x:data}x'))
-		apply(pointer, (results,sessionid))
+		pointer(results,sessionid)
 		self.xmpp.send(self.makeCommand(xml.attrib['from'], in_command.attrib['node'], form=None, id=xml.attrib['id'], sessionid=sessionid, status='completed', actions=[]))
 		del self.sessions[in_command.get('sessionid')]
 		
@@ -92,9 +93,9 @@ class xep_0050(base.base_plugin):
 		in_command = xml.find('{http://jabber.org/protocol/commands}command')
 		sessionid = in_command.get('sessionid', None)
 		pointer = self.sessions[sessionid]['next']
-		results = self.xmpp['xep_0004'].makeForm('result')
+		results = self.xmpp.plugin['xep_0004'].makeForm('result')
 		results.fromXML(in_command.find('{jabber:x:data}x'))
-		form, npointer, next = apply(pointer, (results,sessionid))
+		form, npointer, next = pointer(results,sessionid)
 		self.sessions[sessionid]['next'] = npointer
 		self.sessions[sessionid]['past'].append((form, pointer))
 		actions = []
@@ -133,6 +134,8 @@ class xep_0050(base.base_plugin):
 			command.append(xmlactions)
 		if not sessionid:
 			sessionid = self.getNewSession()
+		else:
+			iq.attrib['from'] = self.sessions[sessionid]['to']
 		command.attrib['sessionid'] = sessionid
 		if form is not None:
 			if hasattr(form,'getXML'):

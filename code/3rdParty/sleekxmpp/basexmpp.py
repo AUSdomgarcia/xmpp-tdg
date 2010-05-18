@@ -1,23 +1,13 @@
 """
     SleekXMPP: The Sleek XMPP Library
-    Copyright (C) 2007  Nathanael C. Fritz
+    Copyright (C) 2010  Nathanael C. Fritz
     This file is part of SleekXMPP.
 
-    SleekXMPP is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    SleekXMPP is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with SleekXMPP; if not, write to the Free Software
-    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+    See the file license.txt for copying permission.
 """
-from __future__ import with_statement
+from __future__ import with_statement, unicode_literals
+
+
 from xml.etree import cElementTree as ET
 from . xmlstream.xmlstream import XMLStream
 from . xmlstream.matcher.xmlmask import MatchXMLMask
@@ -26,61 +16,33 @@ from . xmlstream.handler.xmlcallback import XMLCallback
 from . xmlstream.handler.xmlwaiter import XMLWaiter
 from . xmlstream.handler.callback import Callback
 from . import plugins
+from . stanza.message import Message
+from . stanza.iq import Iq
+from . stanza.presence import Presence
+from . stanza.roster import Roster
+from . stanza.nick import Nick
+from . stanza.htmlim import HTMLIM
+from . stanza.error import Error
 
 import logging
 import threading
+
+import sys
+
+if sys.version_info < (3,0):
+	reload(sys)
+	sys.setdefaultencoding('utf8')
+
+
+def stanzaPlugin(stanza, plugin):
+	stanza.plugin_attrib_map[plugin.plugin_attrib] = plugin
+	stanza.plugin_tag_map["{%s}%s" % (plugin.namespace, plugin.name)] = plugin
+
 
 class basexmpp(object):
 	def __init__(self):
 		self.id = 0
 		self.id_lock = threading.Lock()
-		self.stanza_errors = {
-			'bad-request':False,
-			'conflict':False,
-			'feature-not-implemented':False,
-			'forbidden':False,
-			'gone':True,
-			'internal-server-error':False,
-			'item-not-found':False,
-			'jid-malformed':False,
-			'not-acceptable':False,
-			'not-allowed':False,
-			'payment-required':False,
-			'recipient-unavailable':False,
-			'redirect':True,
-			'registration-required':False,
-			'remote-server-not-found':False,
-			'remote-server-timeout':False,
-			'resource-constraint':False,
-			'service-unavailable':False,
-			'subscription-required':False,
-			'undefined-condition':False,
-			'unexpected-request':False}
-		self.stream_errors = {
-			'bad-format':False,
-			'bad-namespace-prefix':False,
-			'conflict':False,
-			'connection-timeout':False,
-			'host-gone':False,
-			'host-unknown':False,
-			'improper-addressing':False,
-			'internal-server-error':False,
-			'invalid-from':False,
-			'invalid-id':False,
-			'invalid-namespace':False,
-			'invalid-xml':False,
-			'not-authorized':False,
-			'policy-violation':False,
-			'remote-connection-failed':False,
-			'resource-constraint':False,
-			'restricted-xml':False,
-			'see-other-host':True,
-			'system-shutdown':False,
-			'undefined-condition':False,
-			'unsupported-encoding':False,
-			'unsupported-stanza-type':False,
-			'unsupported-version':False,
-			'xml-not-well-formed':False}
 		self.sentpresence = False
 		self.fulljid = ''
 		self.resource = ''
@@ -92,9 +54,28 @@ class basexmpp(object):
 		self.auto_subscribe = True
 		self.event_handlers = {}
 		self.roster = {}
-		self.registerHandler(Callback('IM', MatchMany((MatchXMLMask("<message xmlns='%s' type='chat'><body /></message>" % self.default_ns),MatchXMLMask("<message xmlns='%s' type='normal'><body /></message>" % self.default_ns),MatchXMLMask("<message xmlns='%s' type='__None__'><body /></message>" % self.default_ns))), self._handleMessage, thread=False))
-		self.registerHandler(Callback('Presence', MatchMany((MatchXMLMask("<presence xmlns='%s' type='available'/>" % self.default_ns),MatchXMLMask("<presence xmlns='%s' type='__None__'/>" % self.default_ns),MatchXMLMask("<presence xmlns='%s' type='unavailable'/>" % self.default_ns))), self._handlePresence, thread=False))
-		self.registerHandler(Callback('PresenceSubscribe', MatchMany((MatchXMLMask("<presence xmlns='%s' type='subscribe'/>" % self.default_ns),MatchXMLMask("<presence xmlns='%s' type='unsubscribed'/>" % self.default_ns))), self._handlePresenceSubscribe))
+		self.registerHandler(Callback('IM', MatchXMLMask("<message xmlns='%s'><body /></message>" % self.default_ns), self._handleMessage))
+		self.registerHandler(Callback('Presence', MatchXMLMask("<presence xmlns='%s' />" % self.default_ns), self._handlePresence))
+		self.add_event_handler('presence_subscribe', self._handlePresenceSubscribe)
+		self.registerStanza(Message)
+		self.registerStanza(Iq)
+		self.registerStanza(Presence)
+		self.stanzaPlugin(Iq, Roster)
+		self.stanzaPlugin(Message, Nick)
+		self.stanzaPlugin(Message, HTMLIM)
+
+	def stanzaPlugin(self, stanza, plugin):
+		stanza.plugin_attrib_map[plugin.plugin_attrib] = plugin
+		stanza.plugin_tag_map["{%s}%s" % (plugin.namespace, plugin.name)] = plugin
+	
+	def Message(self, *args, **kwargs):
+		return Message(self, *args, **kwargs)
+
+	def Iq(self, *args, **kwargs):
+		return Iq(self, *args, **kwargs)
+
+	def Presence(self, *args, **kwargs):
+		return Presence(self, *args, **kwargs)
 	
 	def set_jid(self, jid):
 		"""Rip a JID apart and claim it as our own."""
@@ -108,6 +89,8 @@ class basexmpp(object):
 		"""Register a plugin not in plugins.__init__.__all__ but in the plugins
 		directory."""
 		# discover relative "path" to the plugins module from the main app, and import it.
+		# TODO:
+		# gross, this probably isn't necessary anymore, especially for an installed module
 		__import__("%s.%s" % (globals()['plugins'].__name__, plugin))
 		# init the plugin class
 		self.plugin[plugin] = getattr(getattr(plugins, plugin), plugin)(self, pconfig) # eek
@@ -137,17 +120,23 @@ class basexmpp(object):
 			self.id += 1
 			return self.getId()
 	
-	def add_handler(self, mask, pointer, disposable=False, threaded=False, filter=False):
+	def add_handler(self, mask, pointer, disposable=False, threaded=False, filter=False, instream=False):
 		#logging.warning("Deprecated add_handler used for %s: %s." % (mask, pointer))
-		self.registerHandler(XMLCallback('add_handler_%s' % self.getNewId(), MatchXMLMask(mask), pointer, threaded, disposable))
+		self.registerHandler(XMLCallback('add_handler_%s' % self.getNewId(), MatchXMLMask(mask), pointer, threaded, disposable, instream))
 	
 	def getId(self):
 		return "%x".upper() % self.id
+
+	def sendXML(self, data, mask=None, timeout=10):
+		return self.send(self.tostring(data), mask, timeout)
 	
-	def send(self, data, mask=None, timeout=60):
+	def send(self, data, mask=None, timeout=10):
 		#logging.warning("Deprecated send used for \"%s\"" % (data,))
-		if not type(data) == type(''):
-			data = self.tostring(data)
+		#if not type(data) == type(''):
+		#	data = self.tostring(data)
+		if hasattr(mask, 'xml'):
+			mask = mask.xml
+		data = str(data)
 		if mask is not None:
 			waitfor = XMLWaiter('SendWait_%s' % self.getNewId(), MatchXMLMask(mask))
 			self.registerHandler(waitfor)
@@ -156,85 +145,27 @@ class basexmpp(object):
 			return waitfor.wait(timeout)
 	
 	def makeIq(self, id=0, ifrom=None):
-		iq = ET.Element('{%s}iq' % self.default_ns)
-		if id == 0:
-			id = self.getNewId()
-		iq.set('id', str(id))
-		if ifrom is not None:
-			iq.attrib['from'] = ifrom
-		return iq
+		return self.Iq().setValues({'id': id, 'from': ifrom})
 	
 	def makeIqGet(self, queryxmlns = None):
-		iq = self.makeIq()
-		iq.set('type', 'get')
+		iq = self.Iq().setValues({'type': 'get'})
 		if queryxmlns:
-			query = ET.Element("{%s}query" % queryxmlns)
-			iq.append(query)
+			iq.append(ET.Element("{%s}query" % queryxmlns))
 		return iq
 	
 	def makeIqResult(self, id):
-		iq = self.makeIq(id)
-		iq.set('type', 'result')
-		return iq
+		return self.Iq().setValues({'id': id, 'type': 'result'})
 	
 	def makeIqSet(self, sub=None):
-		iq = self.makeIq()
-		iq.set('type', 'set')
+		iq = self.Iq().setValues({'type': 'set'})
 		if sub != None:
 			iq.append(sub)
 		return iq
 
-	def makeIqError(self, id):
-		iq = self.makeIq(id)
-		iq.set('type', 'error')
+	def makeIqError(self, id, type='cancel', condition='feature-not-implemented', text=None):
+		iq = self.Iq().setValues({'id': id})
+		iq['error'].setValues({'type': type, 'condition': condition, 'text': text})
 		return iq
-
-	def makeStanzaErrorCondition(self, condition, cdata=None):
-		if condition not in self.stanza_errors:
-			raise ValueError()
-		stanzaError = ET.Element('{urn:ietf:params:xml:ns:xmpp-stanzas}'+condition)
-		if cdata is not None:
-			if not self.stanza_errors[condition]:
-				raise ValueError()
-			stanzaError.text = cdata
-		return stanzaError
-
-
-	def makeStanzaError(self, condition, errorType, code=None, text=None, customElem=None):
-		if errorType not in ['auth', 'cancel', 'continue', 'modify', 'wait']:
-			raise ValueError()
-		error = ET.Element('error')
-		error.append(self.makeStanzaErrorCondition(condition))
-		error.set('type',errorType)
-		if code is not None:
-			error.set('code', code)
-		if text is not None:
-			textElem = ET.Element('text')
-			textElem.text = text
-			error.append(textElem)
-		if customElem is not None:
-			error.append(customElem)
-		return error
-
-	def makeStreamErrorCondition(self, condition, cdata=None):
-		if condition not in self.stream_errors:
-			raise ValueError()
-		streamError = ET.Element('{urn:ietf:params:xml:ns:xmpp-streams}'+condition)
-		if cdata is not None:
-			if not self.stream_errors[condition]:
-				raise ValueError()
-			textElem = ET.Element('text')
-			textElem.text = text
-			streamError.append(textElem)
-
-	def makeStreamError(self, errorElem, text=None):
-		error = ET.Element('error')
-		error.append(errorElem)
-		if text is not None:
-			textElem = ET.Element('text')
-			textElem.text = text
-			error.append(text)
-		return error
 
 	def makeIqQuery(self, iq, xmlns):
 		query = ET.Element("{%s}query" % xmlns)
@@ -264,62 +195,28 @@ class basexmpp(object):
 				with self.lock:
 					self.event_handlers[name].pop(self.event_handlers[name].index(handler))
 	
-	def makeMessage(self, mto, mbody='', msubject=None, mtype=None, mhtml=None, mfrom=None):
-		message = ET.Element('{%s}message' % self.default_ns)
-		if mfrom is None:
-			message.attrib['from'] = self.fulljid
-		else:
-			message.attrib['from'] = mfrom
-		message.attrib['to'] = mto
-		if not mtype:
-			mtype='chat'
-		message.attrib['type'] = mtype
-		if mtype == 'none':
-			del message.attrib['type']
-		if mbody:
-			body = ET.Element('body')
-			body.text = mbody
-			message.append(body)
-		if mhtml :
-			html = ET.Element('{http://jabber.org/protocol/xhtml-im}html')
-			html_body = ET.XML('<body xmlns="http://www.w3.org/1999/xhtml">' + mhtml + '</body>')
-			html.append(html_body)
-			message.append(html)
-		if msubject:
-			subject = ET.Element('subject')
-			subject.text = msubject
-			message.append(subject)
+	def makeMessage(self, mto, mbody=None, msubject=None, mtype=None, mhtml=None, mfrom=None, mnick=None):
+		message = self.Message(sto=mto, stype=mtype, sfrom=mfrom)
+		message['body'] = mbody
+		message['subject'] = msubject
+		if mnick is not None: message['nick'] = mnick
+		if mhtml is not None: message['html'] = mhtml
 		return message
 	
 	def makePresence(self, pshow=None, pstatus=None, ppriority=None, pto=None, ptype=None, pfrom=None):
-		presence = ET.Element('{%s}presence' % self.default_ns)
-		if ptype:
-			presence.attrib['type'] = ptype
-		if pshow:
-			show = ET.Element('show')
-			show.text = pshow
-			presence.append(show)
-		if pstatus:
-			status = ET.Element('status')
-			status.text = pstatus
-			presence.append(status)
-		if ppriority:
-			priority = ET.Element('priority')
-			priority.text = str(ppriority)
-			presence.append(priority)
-		if pto:
-			presence.attrib['to'] = pto
-		if pfrom is None:
-			presence.attrib['from'] = self.fulljid
-		else:
-			presence.attrib['from'] = pfrom
+		presence = self.Presence(stype=ptype, sfrom=pfrom, sto=pto)
+		if pshow is not None: presence['type'] = pshow
+		if pfrom is None: #maybe this should be done in stanzabase
+			presence['from'] = self.fulljid
+		presence['priority'] = ppriority
+		presence['status'] = pstatus
 		return presence
 	
-	def sendMessage(self, mto, mbody, msubject=None, mtype=None, mhtml=None, mfrom=None):
-		self.send(self.makeMessage(mto,mbody,msubject,mtype,mhtml,mfrom))
+	def sendMessage(self, mto, mbody, msubject=None, mtype=None, mhtml=None, mfrom=None, mnick=None):
+		self.send(self.makeMessage(mto,mbody,msubject,mtype,mhtml,mfrom,mnick))
 	
-	def sendPresence(self, pshow=None, pstatus=None, ppriority=None, pto=None, pfrom=None):
-		self.send(self.makePresence(pshow,pstatus,ppriority,pto, pfrom=pfrom))
+	def sendPresence(self, pshow=None, pstatus=None, ppriority=None, pto=None, pfrom=None, ptype=None):
+		self.send(self.makePresence(pshow,pstatus,ppriority,pto, ptype=ptype, pfrom=pfrom))
 		if not self.sentpresence:
 			self.event('sent_presence')
 			self.sentpresence = True
@@ -342,77 +239,45 @@ class basexmpp(object):
 		return fulljid.split('/', 1)[0]
 
 	def _handleMessage(self, msg):
-		xml = msg.xml
-		ns = xml.tag.split('}')[0]
-		if ns == 'message':
-			ns = ''
-		else:
-			ns = "%s}" % ns
-		mfrom = xml.attrib['from']
-		message = xml.find('%sbody' % ns).text
-		subject = xml.find('%ssubject' % ns)
-		if subject is not None:
-			subject = subject.text
-		else:
-			subject = ''
-		resource = self.getjidresource(mfrom)
-		mfrom = self.getjidbare(mfrom)
-		mtype = xml.attrib.get('type', 'normal')
-		name = self.roster.get('name', '')
-		self.event("message", {'jid': mfrom, 'resource': resource, 'name': name, 'type': mtype, 'subject': subject, 'message': message, 'to': xml.attrib.get('to', '')})
+		self.event('message', msg)
 	
 	def _handlePresence(self, presence):
-		xml = presence.xml
-		ns = xml.tag.split('}')[0]
-		if ns == 'presence':
-			ns = ''
-		else:
-			ns = "%s}" % ns
 		"""Update roster items based on presence"""
-		show = xml.find('%sshow' % ns)
-		status = xml.find('%sstatus' % ns)
-		priority = xml.find('%spriority' % ns)
-		fulljid = xml.attrib['from']
-		to = xml.attrib['to']
-		resource = self.getjidresource(fulljid)
-		if not resource:
-			resouce = None
-		jid = self.getjidbare(fulljid)
-		if type(status) == type(None) or status.text is None:
-			status = ''
-		else:
-			status = status.text
-		if type(show) == type(None): 
-			show = 'available'
-		else:
-			show = show.text
-		if xml.get('type', None) == 'unavailable':
-			show = 'unavailable'
-		if type(priority) == type(None):
-			priority = 0
-		else:
-			priority = int(priority.text)
+		self.event("presence_%s" % presence['type'], presence)
+		if presence['type'] in ('subscribe', 'subscribed', 'unsubscribe', 'unsubscribed'):
+			self.event('changed_subscription', presence)
+			return
+		elif not presence['type'] in ('available', 'unavailable') and not presence['type'] in presence.showtypes:
+			return
+		jid = presence['from'].bare
+		resource = presence['from'].resource
+		show = presence['type']
+		status = presence['status']
+		priority = presence['priority']
 		wasoffline = False
 		oldroster = self.roster.get(jid, {}).get(resource, {})
-		if not jid in self.roster:
-				self.roster[jid] = {'groups': [], 'name': '', 'subscription': 'none', 'presence': {}, 'in_roster': False}
+		if not presence['from'].bare in self.roster:
+			self.roster[jid] = {'groups': [], 'name': '', 'subscription': 'none', 'presence': {}, 'in_roster': False}
 		if not resource in self.roster[jid]['presence']:
 			wasoffline = True
 			self.roster[jid]['presence'][resource] = {'show': show, 'status': status, 'priority': priority}
 		else:
-			if self.roster[jid]['presence'][resource].get('show', None) == 'unavailable':
+			if self.roster[jid]['presence'][resource].get('show', 'unavailable') == 'unavailable':
 				wasoffline = True
 			self.roster[jid]['presence'][resource] = {'show': show, 'status': status}
-			if priority:
-				self.roster[jid]['presence'][resource]['priority'] = priority
+			self.roster[jid]['presence'][resource]['priority'] = priority
 		name = self.roster[jid].get('name', '')
-		eventdata = {'jid': jid, 'to': to, 'resource': resource, 'name': name, 'type': show, 'priority': priority, 'message': status}
-		if wasoffline and show in ('available', 'away', 'xa', 'na'):
-			self.event("got_online", eventdata)
-		elif not wasoffline and show == 'unavailable':
-			self.event("got_offline", eventdata)
-		elif oldroster != self.roster.get(jid, {'presence': {}})['presence'].get(resource, {}) and show != 'unavailable':
-			self.event("changed_status", eventdata)
+		if wasoffline and (show == 'available' or show in presence.showtypes):
+			self.event("got_online", presence)
+		elif show == 'unavailable':
+			logging.debug("%s %s got offline" % (jid, resource))
+			if len(self.roster[jid]['presence']) > 1:
+				del self.roster[jid]['presence'][resource]
+			else:
+				del self.roster[jid]
+			self.event("got_offline", presence)
+		elif oldroster != self.roster.get(jid, {'presence': {}})['presence'].get(resource, {}):
+			self.event("changed_status", presence)
 		name = ''
 		if name:
 			name = "(%s) " % name
@@ -420,13 +285,9 @@ class basexmpp(object):
 	
 	def _handlePresenceSubscribe(self, presence):
 		"""Handling subscriptions automatically."""
-		xml = presence.xml
 		if self.auto_authorize == True:
-			#self.updateRoster(self.getjidbare(xml.attrib['from']))
-			self.send(self.makePresence(ptype='subscribed', pto=self.getjidbare(xml.attrib['from'])))
+			self.send(self.makePresence(ptype='subscribed', pto=presence['from'].bare))
 			if self.auto_subscribe:
-				self.send(self.makePresence(ptype='subscribe', pto=self.getjidbare(xml.attrib['from'])))
+				self.send(self.makePresence(ptype='subscribe', pto=presence['from'].bare))
 		elif self.auto_authorize == False:
-			self.send(self.makePresence(ptype='unsubscribed', pto=self.getjidbare(xml.attrib['from'])))
-		elif self.auto_authorize == None:
-			pass
+			self.send(self.makePresence(ptype='unsubscribed', pto=presence['from'].bare))

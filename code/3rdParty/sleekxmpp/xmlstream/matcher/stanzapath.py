@@ -5,9 +5,10 @@
 
     See the file license.txt for copying permission.
 """
-from . waiter import Waiter
+from . import base
+from xml.etree import cElementTree
 
-class XMLWaiter(Waiter):
-	
-	def prerun(self, payload):
-		Waiter.prerun(self, payload.xml)
+class StanzaPath(base.MatcherBase):
+
+	def match(self, stanza):
+		return stanza.match(self._criteria)
