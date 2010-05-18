@@ -30,7 +30,7 @@ class ConfigurableBot :
   ## BEGIN NEW
   def handleConfigurationCommand(self, form, sessionId):
     values = form.getValues()
-    monitorPresence = True if values["monitorPresence"] == "1" else False
+    monitorPresence =values["monitorPresence"]
     jid = self.xmpp.plugin["xep_0050"].sessions[sessionId]["jid"]
     user = self.backend.getUserFromJID(jid)
     self.backend.setShouldMonitorPresenceFromUser(user, monitorPresence)
@@ -38,9 +38,10 @@ class ConfigurableBot :
 
   ## BEGIN NEW
   def handleIncomingXMPPPresence(self, event):
-    user = self.backend.getUserFromJID(event["jid"])
-    if self.backend.getShouldMonitorPresenceFromUser(user):
-      self.handleIncomingXMPPEvent(event)
+    user = self.backend.getUserFromJID(event["from"].jid)
+    if user is not None:
+      if self.backend.getShouldMonitorPresenceFromUser(user):
+        self.handleIncomingXMPPEvent(event)
   ## END NEW
 
   def handleXMPPConnected(self, event):
